@@ -1,0 +1,7 @@
+# A2
+Zhang,Yaonan 20809952
+
+## instructions
+``make``
+``g++ -o watdfs_client -L. -lwatdfsmain -lwatdfs -lrpc -lfuse -pthread``
+

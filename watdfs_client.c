@@ -9,6 +9,8 @@
 #include "rpc.h"
 #include "fuse.h"
 
+//#define PRINT_ERR
+
 #ifdef PRINT_ERR
 #include <cstdio>
 #endif
@@ -211,6 +213,9 @@ int watdfs_cli_mknod(void *userdata, const char *path, mode_t mode, dev_t dev) {
 	{
 		if (retcode < 0) 
 		{
+#ifdef PRINT_ERR
+			printf("mknod error: %d\n", retcode);
+#endif
 			fxn_ret = retcode;
 		}
 	}
@@ -307,16 +312,127 @@ int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
 
 	// Remember that size may be greater then the maximum array size of the RPC
 	// library.
-	return -ENOSYS;
+	int num_args = 6;
+	void **args = (void**) malloc(6 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+	
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*) path;
+    
+	//arg_types[1] = (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | size;  //buf
+    //args[1] = (void*) buf;
+	
+	arg_types[2] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //size
+	//args[2] = &size;
+	
+	arg_types[3] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //offset
+	args[3] = &offset;
+    
+	arg_types[4] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
+    args[4] = (void*)fi;
+	
+	arg_types[5] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[5] = &retcode;
+
+	arg_types[6] = 0;
+
+	int tot = 0;
+	int ps = 0;
+	args[2] = &ps;
+
+	while(size>0)
+	{
+		ps = size < MAX_ARRAY_LEN ? size : MAX_ARRAY_LEN;
+		size -= ps;
+		arg_types[1] = (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | ps;  //buf
+		args[1] = (void*)buf;
+		
+		int rpc_ret = rpcCall((char *)"read", arg_types, args);
+
+		if (rpc_ret < 0)
+			return -EINVAL;
+		if (retcode < 0)
+			return retcode;
+     
+		tot += retcode;
+		offset += ps;
+		buf += ps;
+	}
+	return tot;
 }
+
 int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 		size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Write size amount of data at offset of file from buf.
 
 	// Remember that size may be greater then the maximum array size of the RPC
 	// library.
-	return -ENOSYS;
+#ifdef PRINT_ERR
+	printf("WRITE %s[%d,%d] -> %s\n",buf,offset,size,path);
+#endif
+	int num_args = 6;
+	void **args = (void**) malloc(6 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+	
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*) path;
+    
+	//arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | size;  //buf
+    //args[1] = (void*) buf;
+	
+	arg_types[2] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //size
+	//args[2] = &size;
+	
+	arg_types[3] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //offset
+	args[3] = &offset;
+    
+	arg_types[4] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
+    args[4] = (void*)fi;
+	
+	arg_types[5] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[5] = &retcode;
+
+	arg_types[6] = 0;
+
+	int tot = 0;
+	int ps = 0;
+	args[2] = &ps;
+
+	while(size>0)
+	{
+		ps = size < MAX_ARRAY_LEN ? size : MAX_ARRAY_LEN;
+		size -= ps;
+		arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | ps;  //buf
+		args[1] = (void*)buf;
+#ifdef PRINT_ERR
+		printf("this: %d rest: %d %s\n",ps, size,buf);
+#endif
+	
+		
+		int rpc_ret = rpcCall((char *)"write", arg_types, args);
+#ifdef PRINT_ERR
+		printf("rpc_ret: %d ret_code: %d\n", rpc_ret, retcode);
+#endif
+
+		if (rpc_ret < 0)
+			return -EINVAL;
+		if (retcode < 0)
+			return retcode;
+     
+		tot += retcode;
+		offset += ps;
+		buf += ps;
+	}
+#ifdef PRINT_ERR
+	printf("Rtn(Tot): %d\n",tot);
+#endif
+	return tot;
 }
+
 int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 	// Change the file size to newsize.
 	return -ENOSYS;
@@ -332,5 +448,5 @@ int watdfs_cli_fsync(void *userdata, const char *path,
 int watdfs_cli_utimens(void *userdata, const char *path,
 		const struct timespec ts[2]) {
 	// Change file access and modification times.
-	return -ENOSYS;
+	return 0;
 }

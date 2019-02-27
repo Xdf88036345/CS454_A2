@@ -23,7 +23,9 @@
 // Need malloc and free.
 #include <cstdlib>
 
-// You may want to include iostream or cstdio.h if you print to standard error.
+// You may want to include iostream or cstdio.h if you print to standard error. 
+//#define PRINT_ERR
+
 #ifdef PRINT_ERR
 #include <cstdio> 
 #endif
@@ -113,14 +115,21 @@ int watdfs_fgetattr(int *argTypes, void **args) {
 int watdfs_mknod(int *argTypes, void **args) {
   
 	char *short_path = (char*)args[0];
-	int mod = *(int*)args[1];
-	long dev = *(long*)args[2];
+	mode_t mod = *(int*)args[1];
+	dev_t dev = *(long*)args[2];
 	int *ret = (int*)args[3];
   
 	char *full_path = get_full_path(short_path);
 	*ret = 0;
+#ifdef PRINT_ERR
+	printf("MKNOD! %s\n", full_path);
+#endif
+
 
 	int sys_ret = mknod(full_path, mod, dev);
+#ifdef PRINT_ERR
+	printf("sys_ret: %d\n", sys_ret);
+#endif
 
 	if(sys_ret < 0) {
 		*ret = -errno;
@@ -152,23 +161,99 @@ int watdfs_open(int *argTypes, void **args) {
 
 int watdfs_release(int *argTypes, void **args) {
 	
-	char *short_path = (char*)args[0];
+	//char *short_path = (char*)args[0];
 	struct fuse_file_info *fi = (struct fuse_file_info*)args[1];
 	int *ret = (int*)args[2];
 	
-	char *full_path = get_full_path(short_path);
+	//char *full_path = get_full_path(short_path);
 	*ret = 0;
 
 	int sys_ret = close(fi->fh);
 	
 	if(sys_ret < 0) 
 		*ret = -errno;
-	else
-		fi->fh = sys_ret;
 
-	free(full_path);
+	//free(full_path);
 	return 0;
 }
+
+int watdfs_write(int *argTypes, void **args) {
+
+	//char *short_path = (char*)args[0];
+	char *buf = (char*)args[1];
+	size_t size = *(long*)args[2]; 
+	off_t offset = *(long*)args[3];
+	struct fuse_file_info *fi = (struct fuse_file_info*)args[4];
+	int *ret = (int*)args[5];
+
+#ifdef PRINT_ERR
+	printf("write: %ld %ld\n",size,offset);
+#endif
+	
+	//char *full_path = get_full_path(short_path);
+	*ret = 0;
+
+	int sys_ret = lseek(fi->fh, offset, SEEK_SET);
+
+	if(sys_ret<0)
+	{
+		*ret = -errno;
+#ifdef PRINT_ERR
+		printf("lseek error! %d\n", errno);
+#endif
+		return -errno;
+	}
+	
+	sys_ret = write(fi->fh, buf, size);
+#ifdef PRINT_ERR
+	printf("wite sys return:%d\n", sys_ret);
+#endif
+	if(sys_ret < 0)
+	{
+		*ret = -errno;
+		return -errno;
+	}
+
+	//free(full_path);
+#ifdef PRINT_ERR
+	printf("return sys return! %d\n",sys_ret);
+#endif
+	*ret = sys_ret;
+	return 0;
+}
+
+int watdfs_read(int *argTypes, void **args) {
+	
+	//char *short_path = (char*)args[0];
+	char *buf = (char*)args[1];
+	size_t size = *(long*)args[2]; 
+	off_t offset = *(long*)args[3];
+	struct fuse_file_info *fi = (struct fuse_file_info*)args[4];
+	int *ret = (int*)args[5];
+	
+	//char *full_path = get_full_path(short_path);
+	*ret = 0;
+
+	int sys_ret = lseek(fi->fh, offset, SEEK_SET);
+
+	if(sys_ret<0)
+	{
+		*ret = -errno;
+		return 0;
+	}
+	
+	sys_ret = read(fi->fh, buf, size);
+	if(sys_ret < 0)
+	{
+		*ret = -errno;
+		return 0;
+	}
+
+	//free(full_path);
+	*ret = sys_ret;
+	return 0;
+}
+
 
 // The main function of the server.
 int main(int argc, char *argv[]) {
@@ -293,6 +378,38 @@ int main(int argc, char *argv[]) {
 	  argTypes[3] = 0;
       
 	  ret = rpcRegister((char*)"release", argTypes, watdfs_release);
+      if (ret < 0)
+        return ret;
+  }
+
+  //write
+  {
+	int argTypes[7];
+      argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
+      argTypes[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //buf
+      argTypes[2] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //size
+      argTypes[3] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //offset
+      argTypes[4] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //fi
+      argTypes[5] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	  argTypes[6] = 0;
+	  
+	  ret = rpcRegister((char*)"write", argTypes, watdfs_write);
+      if (ret < 0)
+        return ret;
+  }
+
+  //read
+  {
+	int argTypes[7];
+      argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
+      argTypes[1] = (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1; //buf
+      argTypes[2] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //size
+      argTypes[3] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //offset
+      argTypes[4] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //fi
+      argTypes[5] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	  argTypes[6] = 0;
+	  
+	  ret = rpcRegister((char*)"read", argTypes, watdfs_read);
       if (ret < 0)
         return ret;
   }
