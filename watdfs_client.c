@@ -339,7 +339,7 @@ int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
 	arg_types[6] = 0;
 
 	int tot = 0;
-	int ps = 0;
+	size_t ps = 0;
 	args[2] = &ps;
 
 	while(size>0)
@@ -399,9 +399,9 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 	arg_types[6] = 0;
 
 	int tot = 0;
-	int ps = 0;
+	size_t ps = 0;
 	args[2] = &ps;
-
+//#define MAX_ARRAY_LEN_T 3
 	while(size>0)
 	{
 		ps = size < MAX_ARRAY_LEN ? size : MAX_ARRAY_LEN;
@@ -409,7 +409,8 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 		arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | ps;  //buf
 		args[1] = (void*)buf;
 #ifdef PRINT_ERR
-		printf("this: %d rest: %d %s\n",ps, size,buf);
+		printf("this: %ld rest: %ld %s\n",ps, size,buf);
+		printf("*args[2]: %ld\n", *(long*)args[2]);
 #endif
 	
 		
@@ -473,12 +474,76 @@ int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 int watdfs_cli_fsync(void *userdata, const char *path,
 		struct fuse_file_info *fi) {
 	// Force a flush of file data.
-	return -ENOSYS;
+	
+	int num_args = 3;
+	void **args = (void**) malloc( 3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+      
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*)path;
+    
+	arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(struct fuse_file_info);  //fi
+	args[1] = (void*)fi;
+
+    arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[2] = &retcode;
+
+	arg_types[3] = 0;
+	
+	int rpc_ret = rpcCall((char *)"fsync", arg_types, args);
+	
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+			fxn_ret = retcode;
+	}
+
+	free(args);
+	return fxn_ret;
 }
 
 // CHANGE METADATA
 int watdfs_cli_utimens(void *userdata, const char *path,
 		const struct timespec ts[2]) {
 	// Change file access and modification times.
-	return 0;
+	int num_args = 3;
+	void **args = (void**) malloc( 3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+      
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*)path;
+    
+	arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | (2*sizeof(struct timespec));  //ts
+	args[1] = (void*)ts;
+
+    arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[2] = &retcode;
+
+	arg_types[3] = 0;
+	
+	int rpc_ret = rpcCall((char *)"utimens", arg_types, args);
+	
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+			fxn_ret = retcode;
+	}
+
+	free(args);
+	return fxn_ret;
 }
+

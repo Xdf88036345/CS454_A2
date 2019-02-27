@@ -249,6 +249,42 @@ int watdfs_truncate(int *argTypes, void **args) {
 	return 0;
 }
 
+int watdfs_fsync(int *argTypes, void **args) {
+	
+	//char *short_path = (char*)args[0];
+	struct fuse_file_info *fi = (struct fuse_file_info*)args[1];
+	int *ret = (int*)args[2];
+	
+	//char *full_path = get_full_path(short_path);
+	*ret = 0;
+
+	int sys_ret = fsync(fi->fh); 
+	
+	if(sys_ret < 0)
+		*ret = -errno;
+
+	//free(full_path);
+	return 0;
+}
+
+int watdfs_utimens(int *argTypes, void **args) {
+	
+	char *short_path = (char*)args[0];
+	struct timespec *ts = (struct timespec*)args[1];	
+	int *ret = (int*)args[2];
+	
+	char *full_path = get_full_path(short_path);
+	*ret = 0;
+
+	int sys_ret = utimensat(0,full_path,ts,0); 
+	
+	if(sys_ret < 0)
+		*ret = -errno;
+
+	free(full_path);
+	return 0;
+}
+
 // The main function of the server.
 int main(int argc, char *argv[]) {
   // argv[1] should contain the directory where you should store data on the
@@ -419,6 +455,33 @@ int main(int argc, char *argv[]) {
 	  ret = rpcRegister((char*)"truncate", argTypes, watdfs_truncate);
       if (ret < 0)
         return ret;
+  }
+
+  //fsync
+  {
+	  int argTypes[3];
+      argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
+      argTypes[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //fi
+      argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	  argTypes[3] = 0;
+	  
+	  ret = rpcRegister((char*)"fsync", argTypes, watdfs_fsync);
+      if (ret < 0)
+        return ret;
+  }
+
+  //utimens
+  {
+	  int argTypes[3];
+      argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
+      argTypes[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //ts
+      argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	  argTypes[3] = 0;
+	  
+	  ret = rpcRegister((char*)"utimens", argTypes, watdfs_utimens);
+      if (ret < 0)
+		  return ret;
+
   }
 
   // Hand over control to the RPC library by calling rpcExecute. You should call
