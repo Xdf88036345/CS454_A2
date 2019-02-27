@@ -435,7 +435,39 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 
 int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 	// Change the file size to newsize.
-	return -ENOSYS;
+	//
+	int num_args = 3;
+	void **args = (void**) malloc( 3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+
+    arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+    args[0] = (void*)path;
+
+	arg_types[1] = (1 << ARG_INPUT) | (ARG_LONG << 16) ; //newsize
+	args[1] = &newsize;
+
+    arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[2] = &retcode;
+	
+	arg_types[3] = 0;
+	
+	int rpc_ret = rpcCall((char *)"truncate", arg_types, args);
+
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+			fxn_ret = retcode;
+	}
+
+	free(args);
+	return fxn_ret;
 }
 
 int watdfs_cli_fsync(void *userdata, const char *path,

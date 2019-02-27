@@ -193,31 +193,15 @@ int watdfs_write(int *argTypes, void **args) {
 	//char *full_path = get_full_path(short_path);
 	*ret = 0;
 
-	int sys_ret = lseek(fi->fh, offset, SEEK_SET);
-
-	if(sys_ret<0)
-	{
-		*ret = -errno;
-#ifdef PRINT_ERR
-		printf("lseek error! %d\n", errno);
-#endif
-		return -errno;
-	}
+	int sys_ret = pwrite(fi->fh, buf, size, offset);
 	
-	sys_ret = write(fi->fh, buf, size);
-#ifdef PRINT_ERR
-	printf("wite sys return:%d\n", sys_ret);
-#endif
 	if(sys_ret < 0)
 	{
 		*ret = -errno;
-		return -errno;
+		return 0;
 	}
 
 	//free(full_path);
-#ifdef PRINT_ERR
-	printf("return sys return! %d\n",sys_ret);
-#endif
 	*ret = sys_ret;
 	return 0;
 }
@@ -234,15 +218,8 @@ int watdfs_read(int *argTypes, void **args) {
 	//char *full_path = get_full_path(short_path);
 	*ret = 0;
 
-	int sys_ret = lseek(fi->fh, offset, SEEK_SET);
-
-	if(sys_ret<0)
-	{
-		*ret = -errno;
-		return 0;
-	}
+	int sys_ret = pread(fi->fh, buf, size, offset);
 	
-	sys_ret = read(fi->fh, buf, size);
 	if(sys_ret < 0)
 	{
 		*ret = -errno;
@@ -254,6 +231,23 @@ int watdfs_read(int *argTypes, void **args) {
 	return 0;
 }
 
+int watdfs_truncate(int *argTypes, void **args) {
+	
+	char *short_path = (char*)args[0];
+	off_t newsize = *(long*)args[1]; 
+	int *ret = (int*)args[2];
+	
+	char *full_path = get_full_path(short_path);
+	*ret = 0;
+
+	int sys_ret = truncate(full_path, newsize);
+	
+	if(sys_ret < 0)
+		*ret = -errno;
+
+	free(full_path);
+	return 0;
+}
 
 // The main function of the server.
 int main(int argc, char *argv[]) {
@@ -400,7 +394,7 @@ int main(int argc, char *argv[]) {
 
   //read
   {
-	int argTypes[7];
+	  int argTypes[7];
       argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
       argTypes[1] = (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1; //buf
       argTypes[2] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //size
@@ -410,6 +404,19 @@ int main(int argc, char *argv[]) {
 	  argTypes[6] = 0;
 	  
 	  ret = rpcRegister((char*)"read", argTypes, watdfs_read);
+      if (ret < 0)
+        return ret;
+  }
+
+  //truncate
+  {
+	  int argTypes[3];
+      argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
+      argTypes[1] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //newsize
+      argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	  argTypes[3] = 0;
+	  
+	  ret = rpcRegister((char*)"truncate", argTypes, watdfs_truncate);
       if (ret < 0)
         return ret;
   }
