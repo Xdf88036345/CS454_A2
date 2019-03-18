@@ -27,6 +27,10 @@ set <string> in_open;
 const char *cache_dir = NULL;
 time_t t = 0;
 
+struct fuse_file_info rmf[1024]; //remote fh
+const char *fp[1024]; // file path
+int	t_client[1024],	t_server[1024];
+
 char* get_cache_path(const char *short_path) {
   int short_path_len = strlen(short_path);
   int dir_len = strlen(cache_dir);
@@ -43,13 +47,52 @@ char* get_cache_path(const char *short_path) {
 }
 
 int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi);
-int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf,
-		struct fuse_file_info *fi);
-int rpc_read(void *userdata, const char *path, char *buf, size_t size,
-		off_t offset, struct fuse_file_info *fi);
-int rpc_release(void *userdata, const char *path,
-		struct fuse_file_info *fi);
+int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi);
+int rpc_read(void *userdata, const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+int rpc_write(void *userdata, const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+int rpc_release(void *userdata, const char *path, struct fuse_file_info *fi);
+int rpc_truncate(void *userdata, const char *path, off_t newsize);
 
+int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
+	// copy file client to server
+	struct stat local_stat;
+
+	fstat(local_fi->fh, &local_stat);
+
+	size_t file_size = local_stat.st_size;
+	rpc_truncate(NULL, path, file_size);
+
+	char* file_buf = new char[file_size+1];
+	read(local_fi->fh, file_buf, file_size);
+
+	rpc_write(NULL, path, file_buf, file_size, 0, remote_fi);
+
+	//TODO: tranfer more info
+
+	free(file_buf);
+	return 0;
+
+}
+
+int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
+	//copy file server to client	
+	struct stat remote_stat;
+
+	rpc_fgetattr(NULL, path, &remote_stat, remote_fi);
+
+	size_t file_size = remote_stat.st_size;
+
+	truncate(full_cache_path, file_size);
+	char* file_buf = new char[file_size+1];
+	rpc_read(NULL, path, file_buf, file_size, 0, remote_fi);
+
+	write(local_fi->fh, file_buf, file_size);
+
+	//TODO: more info
+
+	free(file_buf);
+	return 0;
+}
 // SETUP AND TEARDOWN
 void *watdfs_cli_init(struct fuse_conn_info *conn, const char *path_to_cache,
 		time_t cache_interval) {
@@ -86,7 +129,6 @@ void watdfs_cli_destroy(void *userdata) {
 
 // GET FILE ATTRIBUTES
 int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
-
 	// SET UP THE RPC CALL
 
 	// getattr has 3 arguments.
@@ -166,13 +208,11 @@ int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
 	return fxn_ret;
 }
 
-int watdfs_cli_fgetattr(void *userdata, const char *path, struct stat *statbuf,
-		struct fuse_file_info *fi) {
+int watdfs_cli_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi) {
 	return 0;
 }
 
-int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf,
-		struct fuse_file_info *fi) {
+int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi) {
 	int num_args = 4;
 	void **args = (void**) malloc(4 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -259,8 +299,7 @@ int watdfs_cli_mknod(void *userdata, const char *path, mode_t mode, dev_t dev) {
 
 int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi) {
 	// Called during open.
-	// You should fill in fi->fh.
-	
+	// You should fill in fi->fh.	
 
 	string string_path(path);
 	if(in_open.count(string_path))
@@ -289,23 +328,14 @@ int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi)
 		return ret;
 	}
 
-
-	struct stat remote_stat;
-
-	rpc_fgetattr(NULL, path, &remote_stat, &remote_fi);
-
-	size_t file_size = remote_stat.st_size;
-
-	truncate(full_path, file_size);
-	char* file_buf = new char[file_size+1];
-	rpc_read(NULL, path, file_buf, file_size, 0, &remote_fi);
-
 	fi->fh = local_fi.fh = open(full_path, local_fi.flags);
-	write(local_fi.fh, file_buf, file_size);
+
+	tran_s2c(path, full_path, &local_fi, &remote_fi);
+	
+	fp[fi->fh] = path;
+	rmf[fi->fh] = remote_fi;
 
 	free(full_path);
-	free(file_buf);
-
 	return 0;
 }
 int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi) {
@@ -346,24 +376,25 @@ int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi) {
 	return fxn_ret;
 }
 
-int watdfs_cli_release(void *userdata, const char *path,
-		struct fuse_file_info *fi) {
+int watdfs_cli_release(void *userdata, const char *path, struct fuse_file_info *fi) {
 	// Called during close, but possibly asynchronously.
 
-	//TODO: write back if WR
-	int ret = rpc_release(NULL, path, fi);
+	if((fi->flags & 3) != O_RDONLY) {
+		tran_c2s(fp[fi->fh], fi, &rmf[fi->fh]); //flush remote
+	}
+
+	int ret = rpc_release(NULL, path, &rmf[fi->fh]); //close remote
 	if(ret < 0)
 		return ret;
 	
-	close(fi->fh);
+	close(fi->fh); //close local
 	
 	string string_path(path);
 	in_open.erase(string_path);
 	
 	return 0;
 }
-int rpc_release(void *userdata, const char *path,
-		struct fuse_file_info *fi) {
+int rpc_release(void *userdata, const char *path, struct fuse_file_info *fi) {
 	int num_args = 3;
 	void **args = (void**) malloc(3 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -404,13 +435,18 @@ int rpc_release(void *userdata, const char *path,
 // READ AND WRITE DATA
 int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
 		off_t offset, struct fuse_file_info *fi) {
-	return 0;
+	// Read size amount of data at offset of file into buf.
+	if((fi->flags&3) == O_WRONLY) {
+		return -EPERM;
+	}
+
+	//TODO: check fc
+	int ret = pread(fi->fh, buf, size, offset);
+	return ret;
 }
 
 int rpc_read(void *userdata, const char *path, char *buf, size_t size,
 		off_t offset, struct fuse_file_info *fi) {
-	// Read size amount of data at offset of file into buf.
-
 	// Remember that size may be greater then the maximum array size of the RPC
 	// library.
 	int num_args = 6;
@@ -467,7 +503,17 @@ int rpc_read(void *userdata, const char *path, char *buf, size_t size,
 int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 		size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Write size amount of data at offset of file from buf.
+	if((fi->flags&3) == O_RDONLY) {
+		return -EPERM;
+	}
 
+	//TODO: check fc
+	int ret = pwrite(fi->fh, buf, size, offset);
+	//TODO: check fc'
+	return ret;
+}
+int rpc_write(void *userdata, const char *path, const char *buf,
+		size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Remember that size may be greater then the maximum array size of the RPC
 	// library.
 #ifdef PRINT_ERR
@@ -502,7 +548,7 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 	int tot = 0;
 	size_t ps = 0;
 	args[2] = &ps;
-//#define MAX_ARRAY_LEN_T 3
+	
 	while(size>0)
 	{
 		ps = size < MAX_ARRAY_LEN ? size : MAX_ARRAY_LEN;
@@ -537,7 +583,10 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 
 int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 	// Change the file size to newsize.
-	//
+	return 0;
+}
+
+int rpc_truncate(void *userdata, const char *path, off_t newsize) {
 	int num_args = 3;
 	void **args = (void**) malloc( 3 * sizeof(void*));
 	int arg_types[num_args + 1];

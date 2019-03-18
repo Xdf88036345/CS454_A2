@@ -204,7 +204,6 @@ int watdfs_release(int *argTypes, void **args) {
 }
 
 int watdfs_write(int *argTypes, void **args) {
-
 	//char *short_path = (char*)args[0];
 	char *buf = (char*)args[1];
 	size_t size = *(long*)args[2]; 
@@ -232,8 +231,7 @@ int watdfs_write(int *argTypes, void **args) {
 	return 0;
 }
 
-int watdfs_read(int *argTypes, void **args) {
-	
+int watdfs_read(int *argTypes, void **args) {	
 	//char *short_path = (char*)args[0];
 	char *buf = (char*)args[1];
 	size_t size = *(long*)args[2]; 
@@ -257,8 +255,7 @@ int watdfs_read(int *argTypes, void **args) {
 	return 0;
 }
 
-int watdfs_truncate(int *argTypes, void **args) {
-	
+int watdfs_truncate(int *argTypes, void **args) {	
 	char *short_path = (char*)args[0];
 	off_t newsize = *(long*)args[1]; 
 	int *ret = (int*)args[2];
@@ -276,7 +273,6 @@ int watdfs_truncate(int *argTypes, void **args) {
 }
 
 int watdfs_fsync(int *argTypes, void **args) {
-	
 	//char *short_path = (char*)args[0];
 	struct fuse_file_info *fi = (struct fuse_file_info*)args[1];
 	int *ret = (int*)args[2];
@@ -294,7 +290,6 @@ int watdfs_fsync(int *argTypes, void **args) {
 }
 
 int watdfs_utimens(int *argTypes, void **args) {
-	
 	char *short_path = (char*)args[0];
 	struct timespec *ts = (struct timespec*)args[1];	
 	int *ret = (int*)args[2];
