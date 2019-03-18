@@ -23,6 +23,10 @@
 // Need malloc and free.
 #include <cstdlib>
 
+//stl
+#include <set>
+#include <string>
+
 // You may want to include iostream or cstdio.h if you print to standard error. 
 //#define PRINT_ERR
 
@@ -30,8 +34,12 @@
 #include <cstdio> 
 #endif
 
+using namespace std;
+
 // Global state server_persist_dir.
 char *server_persist_dir = NULL;
+
+set <string> in_open_write; 
 
 // We need to operate on the path relative to the the server_persist_dir.
 // This function returns a path that appends the given short path to the
@@ -146,7 +154,20 @@ int watdfs_open(int *argTypes, void **args) {
 	int *ret = (int*)args[2];
 
 	char *full_path = get_full_path(short_path);
+
 	*ret = 0;
+	
+	if((fi->flags & 3) == O_RDWR) {
+		string string_path(short_path);
+
+		if(in_open_write.count(string_path)) {
+			*ret = -EACCES;
+			free(full_path);
+			return 0;
+		}
+		else
+			in_open_write.insert(string_path);
+	}
 
 	int sys_ret = open(full_path, fi->flags);
 
@@ -161,7 +182,7 @@ int watdfs_open(int *argTypes, void **args) {
 
 int watdfs_release(int *argTypes, void **args) {
 	
-	//char *short_path = (char*)args[0];
+	char *short_path = (char*)args[0];
 	struct fuse_file_info *fi = (struct fuse_file_info*)args[1];
 	int *ret = (int*)args[2];
 	
@@ -172,6 +193,11 @@ int watdfs_release(int *argTypes, void **args) {
 	
 	if(sys_ret < 0) 
 		*ret = -errno;
+
+	if((fi->flags & 3) == O_RDWR) {
+		string string_path(short_path);
+		in_open_write.erase(string_path);
+	}
 
 	//free(full_path);
 	return 0;

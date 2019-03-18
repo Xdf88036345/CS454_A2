@@ -15,13 +15,46 @@
 #include <cstdio>
 #endif
 
+//stl
+#include <set>
+#include <string>
+
+using namespace std;
+
 // You may want to include iostream or cstdio.h if you print to standard error.
+
+set <string> in_open;
+const char *cache_dir = NULL;
+time_t t = 0;
+
+char* get_cache_path(const char *short_path) {
+  int short_path_len = strlen(short_path);
+  int dir_len = strlen(cache_dir);
+  int full_len = dir_len + short_path_len + 1;
+
+  char *full_path = (char*)malloc(full_len);
+
+  // First fill in the directory.
+  strcpy(full_path, cache_dir);
+  // Then append the path.
+  strcat(full_path, short_path);
+
+  return full_path;
+}
+
+int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi);
+int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf,
+		struct fuse_file_info *fi);
+int rpc_read(void *userdata, const char *path, char *buf, size_t size,
+		off_t offset, struct fuse_file_info *fi);
+int rpc_release(void *userdata, const char *path,
+		struct fuse_file_info *fi);
 
 // SETUP AND TEARDOWN
 void *watdfs_cli_init(struct fuse_conn_info *conn, const char *path_to_cache,
 		time_t cache_interval) {
 	// You should set up the RPC library here, by calling rpcClientInit.
-	int rirt = rpcClientInit();
+	rpcClientInit();
 	// You should check the return code of the rpcClientInit call, as it may fail,
 	// for example, if the incorrect port was exported. If there was an error,
 	// it may be useful to print to stderr or stdout during debugging.
@@ -32,13 +65,9 @@ void *watdfs_cli_init(struct fuse_conn_info *conn, const char *path_to_cache,
 	// Or if you prefer c++:
 	// std::cerr << "Failed to initialize RPC Client";
 	// #endif
-	if (rirt < 0)
-	{
-#ifdef PRINT_ERR
-		printf("[%d]\n",rirt);
-#endif
-	}
 
+	t = cache_interval;
+	cache_dir = path_to_cache;
 
 	// You can also initialize any global state that you want to have in this
 	// method, and return it. The value that you return here will be passed
@@ -139,7 +168,11 @@ int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
 
 int watdfs_cli_fgetattr(void *userdata, const char *path, struct stat *statbuf,
 		struct fuse_file_info *fi) {
-	
+	return 0;
+}
+
+int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf,
+		struct fuse_file_info *fi) {
 	int num_args = 4;
 	void **args = (void**) malloc(4 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -228,6 +261,54 @@ int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi)
 	// Called during open.
 	// You should fill in fi->fh.
 	
+
+	string string_path(path);
+	if(in_open.count(string_path))
+		return -EMFILE;
+	else
+		in_open.insert(string_path);
+	
+	char* full_path = get_cache_path(path);
+
+	struct fuse_file_info remote_fi = *fi;
+	struct fuse_file_info local_fi  = *fi;
+
+	//local : RW
+	//remote : RD -> RD, WR -> RW, RW -> RW
+	if((fi->flags & 3) == O_WRONLY)
+	{
+		remote_fi.flags &= ~3;
+		remote_fi.flags |= O_RDWR;
+	}
+	local_fi.flags &= ~3;
+	local_fi.flags |= O_RDWR | O_CREAT;
+
+	int ret = rpc_open(NULL, path, &remote_fi);
+	if(ret < 0) {
+		free(full_path);
+		return ret;
+	}
+
+
+	struct stat remote_stat;
+
+	rpc_fgetattr(NULL, path, &remote_stat, &remote_fi);
+
+	size_t file_size = remote_stat.st_size;
+
+	truncate(full_path, file_size);
+	char* file_buf = new char[file_size+1];
+	rpc_read(NULL, path, file_buf, file_size, 0, &remote_fi);
+
+	fi->fh = local_fi.fh = open(full_path, local_fi.flags);
+	write(local_fi.fh, file_buf, file_size);
+
+	free(full_path);
+	free(file_buf);
+
+	return 0;
+}
+int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi) {
 	int num_args = 3;
 	void **args = (void**) malloc(3 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -268,6 +349,21 @@ int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi)
 int watdfs_cli_release(void *userdata, const char *path,
 		struct fuse_file_info *fi) {
 	// Called during close, but possibly asynchronously.
+
+	//TODO: write back if WR
+	int ret = rpc_release(NULL, path, fi);
+	if(ret < 0)
+		return ret;
+	
+	close(fi->fh);
+	
+	string string_path(path);
+	in_open.erase(string_path);
+	
+	return 0;
+}
+int rpc_release(void *userdata, const char *path,
+		struct fuse_file_info *fi) {
 	int num_args = 3;
 	void **args = (void**) malloc(3 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -307,6 +403,11 @@ int watdfs_cli_release(void *userdata, const char *path,
 
 // READ AND WRITE DATA
 int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
+		off_t offset, struct fuse_file_info *fi) {
+	return 0;
+}
+
+int rpc_read(void *userdata, const char *path, char *buf, size_t size,
 		off_t offset, struct fuse_file_info *fi) {
 	// Read size amount of data at offset of file into buf.
 
