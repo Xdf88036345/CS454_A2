@@ -31,7 +31,7 @@ struct fuse_file_info rmf[1024]; //remote fh
 const char *fp[1024]; // file path
 bool is_open[1024];
 int f_flags[1024];
-int	t_client[1024],	t_server[1024];
+struct timespec	tc[1024];
 
 char* get_cache_path(const char *short_path) {
   int short_path_len = strlen(short_path);
@@ -77,7 +77,9 @@ int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file
 
 	rpc_write(NULL, path, file_buf, file_size, 0, remote_fi);
 
-	//TODO: tranfer more info
+	clock_gettime(CLOCK_REALTIME, &tc[local_fi->fh]);
+	struct timespec ts[2] = {local_stat.st_atim, local_stat.st_mtim};
+	rpc_utimens(NULL, path, ts);
 
 	free(file_buf);
 	return 0;
@@ -93,7 +95,6 @@ int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_inf
 	if(ret < 0) {
 		printf("get remote attr fail %d\n",errno);
 	}
-
 	printf("remote file(%ld)'s size is %ld\n",remote_fi->fh, remote_stat.st_size);
 
 	size_t file_size = remote_stat.st_size;
@@ -103,20 +104,51 @@ int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_inf
 	rpc_read(NULL, path, file_buf, file_size, 0, remote_fi);
 	printf("remote: |%s|\n",file_buf);
 	
-	struct stat local_stat;
-	fstat(local_fi->fh, &local_stat);
-	printf("size before write %ld\n",local_stat.st_size);
-	
 	pwrite(local_fi->fh, file_buf, file_size, 0);
 	
-	fstat(local_fi->fh, &local_stat);
-	printf("size after write %ld\n",local_stat.st_size);
-
-	//TODO: more info
+	clock_gettime(CLOCK_REALTIME, &tc[local_fi->fh]);
+	struct timespec ts[2] = {remote_stat.st_atim, remote_stat.st_mtim};
+	utimensat(0, full_cache_path, ts, 0);
 
 	free(file_buf);
 	return 0;
 }
+
+void check_for_read(const char* path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
+	struct timespec tnow;
+	clock_gettime(CLOCK_REALTIME, &tnow);
+	if(tnow.tv_sec < tc[local_fi->fh].tv_sec + t)
+		return;
+	
+	struct stat local_stat, remote_stat;
+	fstat(local_fi->fh, &local_stat);
+	rpc_fgetattr(NULL, path, &remote_stat, remote_fi);
+	if(local_stat.st_mtim.tv_sec == remote_stat.st_mtim.tv_sec 
+			&& local_stat.st_mtim.tv_nsec == remote_stat.st_mtim.tv_nsec)
+		return;
+
+	char *full_path = get_cache_path(path);
+	tran_s2c(path, full_path, local_fi, remote_fi);
+	free(full_path);
+}
+
+void check_for_write(const char* path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
+	struct timespec tnow;
+	clock_gettime(CLOCK_REALTIME, &tnow);
+	if(tnow.tv_sec < tc[local_fi->fh].tv_sec + t)
+		return;
+	
+	struct stat local_stat, remote_stat;
+	fstat(local_fi->fh, &local_stat);
+	rpc_fgetattr(NULL, path, &remote_stat, remote_fi);
+	if(local_stat.st_mtim.tv_sec == remote_stat.st_mtim.tv_sec 
+			&& local_stat.st_mtim.tv_nsec == remote_stat.st_mtim.tv_nsec)
+		return;
+
+	tran_c2s(path, local_fi, remote_fi);
+}
+
+
 // SETUP AND TEARDOWN
 void *watdfs_cli_init(struct fuse_conn_info *conn, const char *path_to_cache,
 		time_t cache_interval) {
@@ -374,11 +406,15 @@ int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
 		return rpc_getattr(userdata, path, statbuf);
 	}
 
-//	int fd = in_open[string_path];
+	int fd = in_open[string_path];
 //	if((f_flags[fd]&3) == O_WRONLY) {
 //		return -EPERM;
 //	}
-	
+
+	struct fuse_file_info tmp;
+	tmp.fh = fd;
+	check_for_read(path, &tmp, &rmf[fd]);
+
 	int ret = stat(full_path, statbuf);
 	
 
@@ -474,9 +510,10 @@ int rpc_getattr(void *userdata, const char *path, struct stat *statbuf) {
 
 int watdfs_cli_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi) {
 	
-	if((f_flags[fi->fh]&3) == O_WRONLY) {
-		return -EPERM;
-	}
+	//if((f_flags[fi->fh]&3) == O_WRONLY) {
+	//	return -EPERM;
+	//
+	check_for_read(path, fi, &rmf[fi->fh]);
 
 	int ret = fstat(fi->fh, statbuf);
 	return ret;
@@ -532,7 +569,8 @@ int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
 		return -EPERM;
 	}
 
-	//TODO: check fc
+	check_for_read(path, fi, &rmf[fi->fh]);
+
 	printf("fd: %ld\n", fi->fh);
 	int ret = pread(fi->fh, buf, size, offset);
 	if(ret < 0)
@@ -607,21 +645,10 @@ int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 		return -EPERM;
 	}
 
-	//TODO: check fc
-	
-	struct stat tmp_stat;
-	int tr = fstat(fi->fh, &tmp_stat);
-	printf("file(%ld) size:%ld\n", fi->fh, tmp_stat.st_size);
-	if(tr < 0) {
-		printf("fstat error %d\n",errno);
-	}
-
 	printf("local write |%s| = %ld at %ld\n endwith{%d}\n", buf,size,offset,buf[size-1]);
 	int ret = pwrite(fi->fh, buf, size, offset);
-	//TODO: check fc'
 	
-	fstat(fi->fh, &tmp_stat);
-	printf("file(%ld) size:%ld\n", fi->fh, tmp_stat.st_size);
+	check_for_write(path, fi, &rmf[fi->fh]);
 	
 	if(ret < 0)
 	{
@@ -721,6 +748,11 @@ int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 	if(ret<0) {
 		return -errno;
 	}
+
+	struct fuse_file_info tmp;
+	tmp.fh = fd;
+	check_for_write(path, &tmp, &rmf[fd]);
+
 	return ret;
 }
 
@@ -828,11 +860,15 @@ int watdfs_cli_utimens(void *userdata, const char *path,
 	}
 
 	//TODO: may need check for read/write only, but I'm lazy..
-	//TODO: check tc
 	int ret = utimensat(0,full_path,ts,0);
 	free(full_path);
 	if(ret < 0)
 		return -errno;
+	
+	int fd = in_open[string_path];
+	struct fuse_file_info tmp;
+	tmp.fh = fd;
+	check_for_write(path, &tmp, &rmf[fd]);
 
 	return 0;
 }
