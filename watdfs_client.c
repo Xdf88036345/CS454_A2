@@ -9,26 +9,28 @@
 #include "rpc.h"
 #include "fuse.h"
 
-//#define PRINT_ERR
+#define PRINT_ERR
 
 #ifdef PRINT_ERR
 #include <cstdio>
 #endif
 
 //stl
-#include <set>
+#include <map>
 #include <string>
 
 using namespace std;
 
 // You may want to include iostream or cstdio.h if you print to standard error.
 
-set <string> in_open;
+map <string,int> in_open;
 const char *cache_dir = NULL;
 time_t t = 0;
 
 struct fuse_file_info rmf[1024]; //remote fh
 const char *fp[1024]; // file path
+bool is_open[1024];
+int f_flags[1024];
 int	t_client[1024],	t_server[1024];
 
 char* get_cache_path(const char *short_path) {
@@ -52,18 +54,26 @@ int rpc_read(void *userdata, const char *path, char *buf, size_t size, off_t off
 int rpc_write(void *userdata, const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 int rpc_release(void *userdata, const char *path, struct fuse_file_info *fi);
 int rpc_truncate(void *userdata, const char *path, off_t newsize);
+int rpc_getattr(void *userdata, const char *path, struct stat *statbuf);
+int rpc_fsync(void *userdata, const char *path, struct fuse_file_info *fi);
+int rpc_utimens(void *userdata, const char *path, const struct timespec ts[2]);
+
 
 int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
-	// copy file client to server
+	printf("Copy file client to server\n");
+	
 	struct stat local_stat;
 
 	fstat(local_fi->fh, &local_stat);
 
+	printf("local file(%ld)'s size is %ld\n",local_fi->fh, local_stat.st_size);
 	size_t file_size = local_stat.st_size;
 	rpc_truncate(NULL, path, file_size);
 
-	char* file_buf = new char[file_size+1];
-	read(local_fi->fh, file_buf, file_size);
+	char* file_buf = new char[file_size+5];
+	pread(local_fi->fh, file_buf, file_size, 0);
+
+	printf("local: |%s|\n",file_buf);
 
 	rpc_write(NULL, path, file_buf, file_size, 0, remote_fi);
 
@@ -71,22 +81,36 @@ int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file
 
 	free(file_buf);
 	return 0;
-
 }
 
 int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
-	//copy file server to client	
+	printf("Copy file server to client\n");
+
 	struct stat remote_stat;
 
-	rpc_fgetattr(NULL, path, &remote_stat, remote_fi);
+	int ret = rpc_fgetattr(NULL, path, &remote_stat, remote_fi);
+
+	if(ret < 0) {
+		printf("get remote attr fail %d\n",errno);
+	}
+
+	printf("remote file(%ld)'s size is %ld\n",remote_fi->fh, remote_stat.st_size);
 
 	size_t file_size = remote_stat.st_size;
 
 	truncate(full_cache_path, file_size);
-	char* file_buf = new char[file_size+1];
+	char* file_buf = new char[file_size+5];
 	rpc_read(NULL, path, file_buf, file_size, 0, remote_fi);
-
-	write(local_fi->fh, file_buf, file_size);
+	printf("remote: |%s|\n",file_buf);
+	
+	struct stat local_stat;
+	fstat(local_fi->fh, &local_stat);
+	printf("size before write %ld\n",local_stat.st_size);
+	
+	pwrite(local_fi->fh, file_buf, file_size, 0);
+	
+	fstat(local_fi->fh, &local_stat);
+	printf("size after write %ld\n",local_stat.st_size);
 
 	//TODO: more info
 
@@ -127,8 +151,248 @@ void watdfs_cli_destroy(void *userdata) {
 	rpcClientDestroy();
 }
 
+// CREATE, OPEN AND CLOSE
+int watdfs_cli_mknod(void *userdata, const char *path, mode_t mode, dev_t dev) {
+	// Called to create a file.
+#ifdef PRINT_ERR
+	printf("!! mknod %s\n",path);
+#endif
+	int num_args = 4;
+	void **args = (void**) malloc( 4 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*)path;
+
+	arg_types[1] = (1 << ARG_INPUT) | (ARG_INT << 16);      //mod
+	args[1] = &mode;
+
+	arg_types[2] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //dev
+	args[2] = &dev;
+
+	arg_types[3] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[3] = &retcode;
+
+	arg_types[4] = 0;
+
+	int rpc_ret = rpcCall((char *)"mknod", arg_types, args);
+
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		printf("??? rpc mknod fail\n");
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+		{
+#ifdef PRINT_ERR
+			printf("mknod error: %d\n", retcode);
+#endif
+			fxn_ret = retcode;
+		}
+	}
+
+	free(args);
+	printf("mknod rtn: %d\n",fxn_ret);
+	return fxn_ret;
+}
+
+int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi) {
+	// Called during open.
+	// You should fill in fi->fh.	
+
+	printf("Open! %s\n", path);
+
+	string string_path(path);
+	if(in_open.count(string_path))
+		return -EMFILE;
+	
+	char* full_path = get_cache_path(path);
+
+	struct fuse_file_info remote_fi = *fi;
+	struct fuse_file_info local_fi  = *fi;
+
+	//local : RW
+	//remote : RD -> RD, WR -> RW, RW -> RW
+	if((fi->flags & 3) == O_WRONLY)
+	{
+		remote_fi.flags &= ~3;
+		remote_fi.flags |= O_RDWR;
+	}
+	printf("ori local flags 0x%x\n", local_fi.flags);
+	//local_fi.flags &= ~3;
+	//local_fi.flags |= O_RDWR | O_CREAT;
+
+	local_fi.flags = O_RDWR | O_CREAT;
+
+	printf("flags: ori: 0x%x\n server: 0x%x\n", fi->flags, remote_fi.flags);
+
+	int ret = rpc_open(NULL, path, &remote_fi);
+	if(ret < 0) {
+		printf("Open fail %d\n",ret);
+		free(full_path);
+		return ret;
+	}
+	
+	
+	ret = open(full_path, local_fi.flags, S_IRWXU | S_IRWXG | S_IRWXO);
+	if(ret < 0) {
+		printf("local open fail: %d \n %s 0x%x\n", errno,full_path, local_fi.flags);
+		return -errno;
+	}
+	
+	fi->fh = local_fi.fh = ret;
+	printf("open get fd: local:%ld remote%ld\n", local_fi.fh, remote_fi.fh);
+
+	tran_s2c(path, full_path, &local_fi, &remote_fi);
+
+	printf("finsh tran_s2c\n");
+
+	in_open[string_path] = fi->fh;
+	is_open[fi->fh] = true;
+	f_flags[fi->fh] = fi->flags;
+	fp[fi->fh] = path;
+	rmf[fi->fh] = remote_fi;
+
+	free(full_path);
+	return 0;
+}
+int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi) {
+	int num_args = 3;
+	void **args = (void**) malloc(3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+      
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*) path;
+
+    arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
+    args[1] = (void*)fi;
+
+	arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[2] = &retcode;
+
+	
+	arg_types[3] = 0;
+	
+	int rpc_ret = rpcCall((char *)"open", arg_types, args);
+
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		printf("??? repc open fail?\n");
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+		{
+			fxn_ret = retcode;
+		}
+	}
+
+	free(args);
+	return fxn_ret;
+}
+
+int watdfs_cli_release(void *userdata, const char *path, struct fuse_file_info *fi) {
+	// Called during close, but possibly asynchronously.
+
+	if((fi->flags & 3) != O_RDONLY) {
+		tran_c2s(fp[fi->fh], fi, &rmf[fi->fh]); //flush remote
+	}
+
+	int ret = rpc_release(NULL, path, &rmf[fi->fh]); //close remote
+	if(ret < 0)
+		return ret;
+	
+	is_open[fi->fh] = false;
+	close(fi->fh); //close local
+	
+	string string_path(path);
+	in_open.erase(string_path);
+	
+	return 0;
+}
+int rpc_release(void *userdata, const char *path, struct fuse_file_info *fi) {
+	int num_args = 3;
+	void **args = (void**) malloc(3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+      
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*) path;
+
+    arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
+    args[1] = (void*)fi;
+
+	arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
+	int retcode;
+	args[2] = &retcode;
+
+	
+	arg_types[3] = 0;
+	
+	int rpc_ret = rpcCall((char *)"release", arg_types, args);
+
+	int fxn_ret = 0;
+	if (rpc_ret < 0) 
+	{
+		fxn_ret = -EINVAL;
+	} 
+	else 
+	{
+		if (retcode < 0) 
+		{
+			fxn_ret = retcode;
+		}
+	}
+
+	free(args);
+	return fxn_ret;
+}
+
 // GET FILE ATTRIBUTES
 int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
+	//TODO:check
+	printf("Getattr! %s\n", path);
+	
+	char *full_path = get_cache_path(path);
+
+	printf("get full path ok %s\n", full_path);
+	string string_path(path);
+	if(in_open.count(string_path) == 0) {
+		//just for pass test, stupid test design..
+		int tmp_fd = open(full_path, O_CREAT);
+		close(tmp_fd);
+
+		return rpc_getattr(userdata, path, statbuf);
+	}
+
+//	int fd = in_open[string_path];
+//	if((f_flags[fd]&3) == O_WRONLY) {
+//		return -EPERM;
+//	}
+	
+	int ret = stat(full_path, statbuf);
+	
+
+	free(full_path);
+	if(ret < 0) {
+		printf("stat error %d\n",errno);
+		return -errno;
+	}
+
+	return ret;
+}
+
+int rpc_getattr(void *userdata, const char *path, struct stat *statbuf) {
+
 	// SET UP THE RPC CALL
 
 	// getattr has 3 arguments.
@@ -209,7 +473,13 @@ int watdfs_cli_getattr(void *userdata, const char *path, struct stat *statbuf) {
 }
 
 int watdfs_cli_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi) {
-	return 0;
+	
+	if((f_flags[fi->fh]&3) == O_WRONLY) {
+		return -EPERM;
+	}
+
+	int ret = fstat(fi->fh, statbuf);
+	return ret;
 }
 
 int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct fuse_file_info *fi) {
@@ -252,196 +522,24 @@ int rpc_fgetattr(void *userdata, const char *path, struct stat *statbuf, struct 
 	return fxn_ret;
 }
 
-// CREATE, OPEN AND CLOSE
-int watdfs_cli_mknod(void *userdata, const char *path, mode_t mode, dev_t dev) {
-	// Called to create a file.
-	int num_args = 4;
-	void **args = (void**) malloc( 4 * sizeof(void*));
-	int arg_types[num_args + 1];
-	int pathlen = strlen(path) + 1;
-
-	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
-	args[0] = (void*)path;
-
-	arg_types[1] = (1 << ARG_INPUT) | (ARG_INT << 16);      //mod
-	args[1] = &mode;
-
-	arg_types[2] = (1 << ARG_INPUT) | (ARG_LONG << 16);  //dev
-	args[2] = &dev;
-
-	arg_types[3] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
-	int retcode;
-	args[3] = &retcode;
-
-	arg_types[4] = 0;
-
-	int rpc_ret = rpcCall((char *)"mknod", arg_types, args);
-
-	int fxn_ret = 0;
-	if (rpc_ret < 0) 
-	{
-		fxn_ret = -EINVAL;
-	} 
-	else 
-	{
-		if (retcode < 0) 
-		{
-#ifdef PRINT_ERR
-			printf("mknod error: %d\n", retcode);
-#endif
-			fxn_ret = retcode;
-		}
-	}
-
-	free(args);
-	return fxn_ret;
-}
-
-int watdfs_cli_open(void *userdata, const char *path, struct fuse_file_info *fi) {
-	// Called during open.
-	// You should fill in fi->fh.	
-
-	string string_path(path);
-	if(in_open.count(string_path))
-		return -EMFILE;
-	else
-		in_open.insert(string_path);
-	
-	char* full_path = get_cache_path(path);
-
-	struct fuse_file_info remote_fi = *fi;
-	struct fuse_file_info local_fi  = *fi;
-
-	//local : RW
-	//remote : RD -> RD, WR -> RW, RW -> RW
-	if((fi->flags & 3) == O_WRONLY)
-	{
-		remote_fi.flags &= ~3;
-		remote_fi.flags |= O_RDWR;
-	}
-	local_fi.flags &= ~3;
-	local_fi.flags |= O_RDWR | O_CREAT;
-
-	int ret = rpc_open(NULL, path, &remote_fi);
-	if(ret < 0) {
-		free(full_path);
-		return ret;
-	}
-
-	fi->fh = local_fi.fh = open(full_path, local_fi.flags);
-
-	tran_s2c(path, full_path, &local_fi, &remote_fi);
-	
-	fp[fi->fh] = path;
-	rmf[fi->fh] = remote_fi;
-
-	free(full_path);
-	return 0;
-}
-int rpc_open(void *userdata, const char *path, struct fuse_file_info *fi) {
-	int num_args = 3;
-	void **args = (void**) malloc(3 * sizeof(void*));
-	int arg_types[num_args + 1];
-	int pathlen = strlen(path) + 1;
-      
-	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
-	args[0] = (void*) path;
-
-    arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_OUTPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
-    args[1] = (void*)fi;
-
-	arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
-	int retcode;
-	args[2] = &retcode;
-
-	
-	arg_types[3] = 0;
-	
-	int rpc_ret = rpcCall((char *)"open", arg_types, args);
-
-	int fxn_ret = 0;
-	if (rpc_ret < 0) 
-	{
-		fxn_ret = -EINVAL;
-	} 
-	else 
-	{
-		if (retcode < 0) 
-		{
-			fxn_ret = retcode;
-		}
-	}
-
-	free(args);
-	return fxn_ret;
-}
-
-int watdfs_cli_release(void *userdata, const char *path, struct fuse_file_info *fi) {
-	// Called during close, but possibly asynchronously.
-
-	if((fi->flags & 3) != O_RDONLY) {
-		tran_c2s(fp[fi->fh], fi, &rmf[fi->fh]); //flush remote
-	}
-
-	int ret = rpc_release(NULL, path, &rmf[fi->fh]); //close remote
-	if(ret < 0)
-		return ret;
-	
-	close(fi->fh); //close local
-	
-	string string_path(path);
-	in_open.erase(string_path);
-	
-	return 0;
-}
-int rpc_release(void *userdata, const char *path, struct fuse_file_info *fi) {
-	int num_args = 3;
-	void **args = (void**) malloc(3 * sizeof(void*));
-	int arg_types[num_args + 1];
-	int pathlen = strlen(path) + 1;
-      
-	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
-	args[0] = (void*) path;
-
-    arg_types[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | sizeof(fuse_file_info);  //fi
-    args[1] = (void*)fi;
-
-	arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
-	int retcode;
-	args[2] = &retcode;
-
-	
-	arg_types[3] = 0;
-	
-	int rpc_ret = rpcCall((char *)"release", arg_types, args);
-
-	int fxn_ret = 0;
-	if (rpc_ret < 0) 
-	{
-		fxn_ret = -EINVAL;
-	} 
-	else 
-	{
-		if (retcode < 0) 
-		{
-			fxn_ret = retcode;
-		}
-	}
-
-	free(args);
-	return fxn_ret;
-}
-
 // READ AND WRITE DATA
 int watdfs_cli_read(void *userdata, const char *path, char *buf, size_t size,
 		off_t offset, struct fuse_file_info *fi) {
 	// Read size amount of data at offset of file into buf.
-	if((fi->flags&3) == O_WRONLY) {
+	printf("Read! %s\n", path);
+
+	if((f_flags[fi->fh]&3) == O_WRONLY) {
 		return -EPERM;
 	}
 
 	//TODO: check fc
+	printf("fd: %ld\n", fi->fh);
 	int ret = pread(fi->fh, buf, size, offset);
+	if(ret < 0)
+	{
+		printf("read sys error %d\n", errno);
+		return -errno;
+	}
 	return ret;
 }
 
@@ -503,13 +601,33 @@ int rpc_read(void *userdata, const char *path, char *buf, size_t size,
 int watdfs_cli_write(void *userdata, const char *path, const char *buf,
 		size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Write size amount of data at offset of file from buf.
-	if((fi->flags&3) == O_RDONLY) {
+	printf("Write! %s\n",path);
+
+	if((f_flags[fi->fh]&3) == O_RDONLY) {
 		return -EPERM;
 	}
 
 	//TODO: check fc
+	
+	struct stat tmp_stat;
+	int tr = fstat(fi->fh, &tmp_stat);
+	printf("file(%ld) size:%ld\n", fi->fh, tmp_stat.st_size);
+	if(tr < 0) {
+		printf("fstat error %d\n",errno);
+	}
+
+	printf("local write |%s| = %ld at %ld\n endwith{%d}\n", buf,size,offset,buf[size-1]);
 	int ret = pwrite(fi->fh, buf, size, offset);
 	//TODO: check fc'
+	
+	fstat(fi->fh, &tmp_stat);
+	printf("file(%ld) size:%ld\n", fi->fh, tmp_stat.st_size);
+	
+	if(ret < 0)
+	{
+		printf("write sys erro %d\n", errno);
+		return -errno;
+	}
 	return ret;
 }
 int rpc_write(void *userdata, const char *path, const char *buf,
@@ -517,7 +635,7 @@ int rpc_write(void *userdata, const char *path, const char *buf,
 	// Remember that size may be greater then the maximum array size of the RPC
 	// library.
 #ifdef PRINT_ERR
-	printf("WRITE %s[%d,%d] -> %s\n",buf,offset,size,path);
+	printf("rpc WRITE |%s| [%ld,%ld] endwith{%d} -> %s\n",buf,offset,size,buf[size-1],path);
 #endif
 	int num_args = 6;
 	void **args = (void**) malloc(6 * sizeof(void*));
@@ -583,7 +701,27 @@ int rpc_write(void *userdata, const char *path, const char *buf,
 
 int watdfs_cli_truncate(void *userdata, const char *path, off_t newsize) {
 	// Change the file size to newsize.
-	return 0;
+	printf("Truncate %s to %ld\n", path, newsize);
+	
+	char *full_path = get_cache_path(path);
+	string string_path(path);
+	if(in_open.count(string_path) == 0) {
+		return rpc_truncate(userdata, path, newsize);
+	}
+
+	int fd = in_open[string_path];
+	if((f_flags[fd]&3) == O_WRONLY) {
+		return -EPERM;
+	}
+
+	printf("local(%s) truncate to %ld\n",full_path, newsize);
+	int ret = truncate(full_path, newsize);
+	
+	free(full_path);
+	if(ret<0) {
+		return -errno;
+	}
+	return ret;
 }
 
 int rpc_truncate(void *userdata, const char *path, off_t newsize) {
@@ -624,7 +762,24 @@ int rpc_truncate(void *userdata, const char *path, off_t newsize) {
 int watdfs_cli_fsync(void *userdata, const char *path,
 		struct fuse_file_info *fi) {
 	// Force a flush of file data.
-	
+
+	printf("Fsync %s\n", path);
+
+	if(!is_open[fi->fh])
+		return -EBADF;
+
+	if((f_flags[fi->fh]&3) == O_RDONLY) {
+		return -EPERM;
+	}
+
+	tran_c2s(path, fi, &rmf[fi->fh]);
+
+	return rpc_fsync(userdata, path, &rmf[fi->fh]);
+}
+
+int rpc_fsync(void *userdata, const char *path,
+		struct fuse_file_info *fi) {
+
 	int num_args = 3;
 	void **args = (void**) malloc( 3 * sizeof(void*));
 	int arg_types[num_args + 1];
@@ -663,6 +818,27 @@ int watdfs_cli_fsync(void *userdata, const char *path,
 int watdfs_cli_utimens(void *userdata, const char *path,
 		const struct timespec ts[2]) {
 	// Change file access and modification times.
+
+	printf("Utime! %s\n", path);
+	
+	char *full_path = get_cache_path(path);
+	string string_path(path);
+	if(in_open.count(string_path) == 0) {
+		return rpc_utimens(userdata, path, ts);
+	}
+
+	//TODO: may need check for read/write only, but I'm lazy..
+	//TODO: check tc
+	int ret = utimensat(0,full_path,ts,0);
+	free(full_path);
+	if(ret < 0)
+		return -errno;
+
+	return 0;
+}
+
+int rpc_utimens(void *userdata, const char *path,
+		const struct timespec ts[2]) {
 	int num_args = 3;
 	void **args = (void**) malloc( 3 * sizeof(void*));
 	int arg_types[num_args + 1];

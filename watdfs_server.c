@@ -28,7 +28,7 @@
 #include <string>
 
 // You may want to include iostream or cstdio.h if you print to standard error. 
-//#define PRINT_ERR
+#define PRINT_ERR
 
 #ifdef PRINT_ERR
 #include <cstdio> 
@@ -148,33 +148,37 @@ int watdfs_mknod(int *argTypes, void **args) {
 }
 
 int watdfs_open(int *argTypes, void **args) {
-	
+
 	char *short_path = (char*)args[0];
 	struct fuse_file_info *fi = (struct fuse_file_info*)args[1];
 	int *ret = (int*)args[2];
 
 	char *full_path = get_full_path(short_path);
+	
+	printf("OPEN %s\n", full_path);
 
 	*ret = 0;
+	string string_path(short_path);
 	
 	if((fi->flags & 3) == O_RDWR) {
-		string string_path(short_path);
 
 		if(in_open_write.count(string_path)) {
 			*ret = -EACCES;
 			free(full_path);
 			return 0;
 		}
-		else
-			in_open_write.insert(string_path);
 	}
 
 	int sys_ret = open(full_path, fi->flags);
 
 	if(sys_ret < 0) 
 		*ret = -errno;
-	else
+	else {
 		fi->fh = sys_ret;
+		if((fi->flags & 3) == O_RDWR)
+			in_open_write.insert(string_path);
+	}
+	printf("open ret %d\n", *ret);
 
 	free(full_path);
 	return 0;
@@ -193,11 +197,11 @@ int watdfs_release(int *argTypes, void **args) {
 	
 	if(sys_ret < 0) 
 		*ret = -errno;
-
-	if((fi->flags & 3) == O_RDWR) {
-		string string_path(short_path);
-		in_open_write.erase(string_path);
-	}
+	else
+		if((fi->flags & 3) == O_RDWR) {
+			string string_path(short_path);
+			in_open_write.erase(string_path);
+		}
 
 	//free(full_path);
 	return 0;
