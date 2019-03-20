@@ -6,7 +6,7 @@
 
 #include "rpc.h"
 #include "fuse.h"
-
+#include "rw_lock.h"
 // You may need to change your includes depending on whether you use C or C++.
 
 // Needed for stat.
@@ -25,6 +25,7 @@
 
 //stl
 #include <set>
+#include <map>
 #include <string>
 
 // You may want to include iostream or cstdio.h if you print to standard error. 
@@ -40,6 +41,7 @@ using namespace std;
 char *server_persist_dir = NULL;
 
 set <string> in_open_write; 
+map <string, rw_lock_t> f_lock;
 
 // We need to operate on the path relative to the the server_persist_dir.
 // This function returns a path that appends the given short path to the
@@ -177,6 +179,8 @@ int watdfs_open(int *argTypes, void **args) {
 		fi->fh = sys_ret;
 		if((fi->flags & 3) == O_RDWR)
 			in_open_write.insert(string_path);
+		f_lock[string_path] = RW_LOCK_INITIALIZER;
+		rw_lock_init(&f_lock[string_path]);
 	}
 	printf("open ret %d\n", *ret);
 
@@ -197,13 +201,29 @@ int watdfs_release(int *argTypes, void **args) {
 	
 	if(sys_ret < 0) 
 		*ret = -errno;
-	else
+	else {
+		string string_path(short_path);
 		if((fi->flags & 3) == O_RDWR) {
-			string string_path(short_path);
 			in_open_write.erase(string_path);
 		}
+		rw_lock_destroy(&f_lock[string_path]);
+	}
 
 	//free(full_path);
+	return 0;
+}
+
+int watdfs_rw_lock(int* argTypes, void **args) {
+	char *short_path = (char*)args[0];
+	int type = *(int*)args[1]; // 0:lock 1:unlock
+
+	rw_lock_mode_t mode = 
+		*(int*)args[2] == 0 ? RW_READ_LOCK : RW_WRITE_LOCK;
+	if(type == 0)
+		rw_lock_lock(&f_lock[short_path], mode);
+	else
+		rw_lock_unlock(&f_lock[short_path], mode);
+
 	return 0;
 }
 
@@ -471,7 +491,7 @@ int main(int argc, char *argv[]) {
 
   //truncate
   {
-	  int argTypes[3];
+	  int argTypes[4];
       argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
       argTypes[1] = (1 << ARG_INPUT) | (ARG_LONG << 16) ;                        //newsize
       argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
@@ -484,7 +504,7 @@ int main(int argc, char *argv[]) {
 
   //fsync
   {
-	  int argTypes[3];
+	  int argTypes[4];
       argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
       argTypes[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //fi
       argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
@@ -497,7 +517,7 @@ int main(int argc, char *argv[]) {
 
   //utimens
   {
-	  int argTypes[3];
+	  int argTypes[4];
       argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //path
       argTypes[1] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;  //ts
       argTypes[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //retcode
@@ -507,6 +527,18 @@ int main(int argc, char *argv[]) {
       if (ret < 0)
 		  return ret;
 
+  }
+
+  //rw_lock
+  {
+	  int argTypes[4];
+	  argTypes[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | 1;//path
+	  argTypes[1] = (1 << ARG_INPUT) | (ARG_INT << 16); //type
+	  argTypes[2] = (1 << ARG_INPUT) | (ARG_INT << 16); //mode
+	  
+	  ret = rpcRegister((char*)"rw_lock", argTypes, watdfs_rw_lock);
+      if (ret < 0)
+		  return ret;
   }
 
   // Hand over control to the RPC library by calling rpcExecute. You should call

@@ -58,10 +58,36 @@ int rpc_getattr(void *userdata, const char *path, struct stat *statbuf);
 int rpc_fsync(void *userdata, const char *path, struct fuse_file_info *fi);
 int rpc_utimens(void *userdata, const char *path, const struct timespec ts[2]);
 
+int rpc_rw_lock(void *userdata, const char *path, int type, int mode) {
+	//type : 0->lock 1->unlock
+	//mode : 0->READ 1->WRITE
+	
+	int num_args = 3;
+	void **args = (void**) malloc( 3 * sizeof(void*));
+	int arg_types[num_args + 1];
+	int pathlen = strlen(path) + 1;
+	
+	arg_types[0] = (1 << ARG_INPUT) | (1 << ARG_ARRAY) | (ARG_CHAR << 16) | pathlen;  //path
+	args[0] = (void*)path;
+    
+	arg_types[1] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //type
+	args[1] = &type;
+	
+	arg_types[2] = (1 << ARG_OUTPUT) | (ARG_INT << 16); //mode
+	args[2] = &mode;
+    
+	arg_types[3] = 0;
+     
+	rpcCall((char *)"rw_lock", arg_types, args);	
+	
+	return 0;
+}
 
 int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
 	printf("Copy file client to server\n");
-	
+
+	rpc_rw_lock(NULL, path, 0, 1);
+
 	struct stat local_stat;
 
 	fstat(local_fi->fh, &local_stat);
@@ -81,12 +107,15 @@ int tran_c2s(const char* path, struct fuse_file_info *local_fi, struct fuse_file
 	struct timespec ts[2] = {local_stat.st_atim, local_stat.st_mtim};
 	rpc_utimens(NULL, path, ts);
 
+	rpc_rw_lock(NULL, path, 1, 1);
 	free(file_buf);
 	return 0;
 }
 
 int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_info *local_fi, struct fuse_file_info *remote_fi) {
 	printf("Copy file server to client\n");
+
+	rpc_rw_lock(NULL, path, 0, 0);
 
 	struct stat remote_stat;
 
@@ -110,6 +139,7 @@ int tran_s2c(const char* path, const char* full_cache_path, struct fuse_file_inf
 	struct timespec ts[2] = {remote_stat.st_atim, remote_stat.st_mtim};
 	utimensat(0, full_cache_path, ts, 0);
 
+	rpc_rw_lock(NULL, path, 1, 0);
 	free(file_buf);
 	return 0;
 }
