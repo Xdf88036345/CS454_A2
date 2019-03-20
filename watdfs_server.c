@@ -29,7 +29,7 @@
 #include <string>
 
 // You may want to include iostream or cstdio.h if you print to standard error. 
-#define PRINT_ERR
+//#define PRINT_ERR
 
 #ifdef PRINT_ERR
 #include <cstdio> 
@@ -132,13 +132,13 @@ int watdfs_mknod(int *argTypes, void **args) {
 	char *full_path = get_full_path(short_path);
 	*ret = 0;
 #ifdef PRINT_ERR
-	printf("MKNOD! %s\n", full_path);
+	{}//printf("MKNOD! %s\n", full_path);
 #endif
 
 
 	int sys_ret = mknod(full_path, mod, dev);
 #ifdef PRINT_ERR
-	printf("sys_ret: %d\n", sys_ret);
+	{}//printf("sys_ret: %d\n", sys_ret);
 #endif
 
 	if(sys_ret < 0) {
@@ -157,7 +157,7 @@ int watdfs_open(int *argTypes, void **args) {
 
 	char *full_path = get_full_path(short_path);
 	
-	printf("OPEN %s\n", full_path);
+	{}//printf("OPEN %s\n", full_path);
 
 	*ret = 0;
 	string string_path(short_path);
@@ -182,7 +182,7 @@ int watdfs_open(int *argTypes, void **args) {
 		f_lock[string_path] = RW_LOCK_INITIALIZER;
 		rw_lock_init(&f_lock[string_path]);
 	}
-	printf("open ret %d\n", *ret);
+	{}//printf("open ret %d\n", *ret);
 
 	free(full_path);
 	return 0;
@@ -219,10 +219,20 @@ int watdfs_rw_lock(int* argTypes, void **args) {
 
 	rw_lock_mode_t mode = 
 		*(int*)args[2] == 0 ? RW_READ_LOCK : RW_WRITE_LOCK;
-	if(type == 0)
-		rw_lock_lock(&f_lock[short_path], mode);
-	else
-		rw_lock_unlock(&f_lock[short_path], mode);
+	
+	string string_path(short_path);
+	int ret;
+	if(type == 0) {
+		ret = rw_lock_lock(&f_lock[string_path], mode);
+		{}//printf("LOCK %s %d\n", short_path, mode);
+	}
+	else {
+		ret = rw_lock_unlock(&f_lock[string_path], mode);
+		{}//printf("UNLOCK %s %d\n", short_path, mode);
+	}
+
+	if(ret != 0)
+		{}//printf("LOCK ERROR %d\n",ret);
 
 	return 0;
 }
@@ -236,7 +246,7 @@ int watdfs_write(int *argTypes, void **args) {
 	int *ret = (int*)args[5];
 
 #ifdef PRINT_ERR
-	printf("write: %ld %ld\n",size,offset);
+	{}//printf("write: %ld %ld\n",size,offset);
 #endif
 	
 	//char *full_path = get_full_path(short_path);
@@ -340,12 +350,12 @@ int main(int argc, char *argv[]) {
     // prior to submission!
     // See watdfs_client.c for more details
     // # ifdef PRINT_ERR
-    // fprintf(stderr, "Usage: %s server_persist_dir\n", argv[0]);
+    // f{}//printf(stderr, "Usage: %s server_persist_dir\n", argv[0]);
     // Or if you prefer c++:
     // std::cerr << "Usaage:" << argv[0] << " server_persist_dir";
     // #endif
 #ifdef PRINT_ERR
-	printf("bad argc\n");
+	{}//printf("bad argc\n");
 #endif
     return -1;
   }
@@ -358,7 +368,7 @@ int main(int argc, char *argv[]) {
   if (ret < 0)
   {
 #ifdef PRINT_ERR
-	printf("prcSI ret:%d\n",ret);
+	{}//printf("prcSI ret:%d\n",ret);
 #endif
 	return ret;
   }
@@ -387,7 +397,7 @@ int main(int argc, char *argv[]) {
       if (ret < 0) {
         // It may be useful to have debug-printing here.
 #ifdef PRINT_ERR
-		printf("getattr rpc Reg bad!\n");
+		{}//printf("getattr rpc Reg bad!\n");
 #endif
         return ret;
       }
@@ -406,7 +416,7 @@ int main(int argc, char *argv[]) {
       ret = rpcRegister((char*)"fgetattr", argTypes, watdfs_fgetattr);
       if (ret < 0) {
 #ifdef PRINT_ERR
-		printf("fgetattr rpc Reg bad!\n");
+		{}//printf("fgetattr rpc Reg bad!\n");
 #endif
         return ret;
       }
@@ -425,7 +435,7 @@ int main(int argc, char *argv[]) {
       ret = rpcRegister((char*)"mknod", argTypes, watdfs_mknod);
       if (ret < 0) {
 #ifdef PRINT_ERR
-		printf("mknod rpc Reg bad!\n");
+		{}//printf("mknod rpc Reg bad!\n");
 #endif
         return ret;
       }
@@ -549,7 +559,7 @@ int main(int argc, char *argv[]) {
   // you should return.
 #ifdef PRINT_ERR
   if(ret < 0)
-	  printf("rpc exec fail:%d\n", ret);
+	  {}//printf("rpc exec fail:%d\n", ret);
 #endif
   return ret;
 }
