@@ -1,2 +1,26 @@
-The key idea is to do most
+The key idea is to do performing operations locally, and only copy file server to client, or client to server, when necessary.
+I rename all function in A2 to rpc_<function_name>, so I can reuse these rpc calls.
+I use the function tran_s2c to copy a file from server to client, and tran_c2s for the other direction. They are similar, use fstat/rpc_fgetattr to get the size of src, use it to truncate dst, read from src and write to dst, finally set utime and update tc.
+
+For Mutual Exclusion, I use a std::map in client to record files opened and their fd, use a std::set in server to record files opened in WR mode.
+
+In client, there're many thing need to record, so I have 5 array, for corresponding remote fi，path, now if it's still opened, flags, last validated time.
+
+To check the invalidation state, first get current time to check [T-Tc < t], then use fstat and rpc_fgetattr to get T_client and T_sever and check [T_client == T_server]. Update Tc each time copy the file.
+
+For atomic, I use a new rpc call rpc_rw_lock. One is enough, we don't need two, just tell sever you want to lock or unlock. And I use a std::map in server to map path to lock.
+
+I also did some work that may be not necessary for passing tests. For fsync, after copy file to server, I also call rpc_fsync. It doesn't matter for this Assignment, but may be necessary in a real dfs. The server may be a client of another dfs, or need flush for some other reason.
+
+
+error code:
+	-EMFILE
+	-EACCES
+	-EPERM
+	-EIINVAL
+
+To test my Assigment, first I use bash command to check basic functionality, then use python to do operations step by step. os.open -> os.write -> os.write -> [another client]os.open -> [ac]os.read -> ...
+I use many printf, so I can see each step if it performs as expected. (But it's important to remember to remove all printf before submit, otherwise it may timeout. I spent 4 hours to debug, and finally found there's no bug, just because of printf. I don't use #ifdef, so I replace all "printf" to "{}//printf")
+
+
 
